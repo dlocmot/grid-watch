@@ -10,7 +10,9 @@
 
 ## Global Constraints
 
-- Python **3.11 o superior** (se usa `tomllib` de la stdlib).
+- Python **3.12 o superior**. `tomllib` ya estaba en 3.11, pero `growattServer`
+  2.x usa la sintaxis `type X = ...` (PEP 695) y en 3.11 falla al importar con
+  `SyntaxError` — detectado por la CI, no en local.
 - Licencia **MIT**; repositorio **público**: ningún secreto, IP, serial ni topic real puede entrar en un archivo versionado.
 - Los secretos llegan **solo por variables de entorno**: `GROWATT_USER`, `GROWATT_PASSWORD`, `NTFY_TOPIC`, `NTFY_TOKEN`.
 - La contraseña se **redacta** en cualquier log, repr o traza.

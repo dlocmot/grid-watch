@@ -4,8 +4,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Sin fail-fast: si una versión rompe, queremos ver igualmente el
+      # resultado de las demás en vez de que se cancelen.
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -2,7 +2,9 @@
 name = "grid-watch"
 version = "0.1.0"
 description = "Phone alert when the public grid goes down, detected through an off-grid Growatt inverter"
-requires-python = ">=3.11"
+# 3.12+ lo impone growattServer >= 2.x: usa la sintaxis `type X = ...`
+# (PEP 695), que en 3.11 es un SyntaxError al importar.
+requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = ["growattServer>=1.5.0", "requests>=2.31.0"]
 

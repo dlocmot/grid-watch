@@ -10,7 +10,8 @@ later without touching anything else.
 
 ## Install
 
-Requires Python 3.11+.
+Requires Python 3.12+ (`growattServer` 2.x uses PEP 695 syntax that 3.11
+cannot parse).
 
 ```bash
 git clone https://github.com/dlocmot/grid-watch && cd grid-watch
