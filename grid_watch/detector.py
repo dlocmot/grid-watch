@@ -10,7 +10,9 @@ import dataclasses
 from datetime import datetime
 
 from .config import Config
-from .models import GRID_DOWN, GRID_RESTORED, Event, Reading, State
+from .models import (BATTERY_CRITICAL, GRID_DOWN, GRID_RESTORED,
+                     INVERTER_REPORTING, INVERTER_SILENT, MONITOR_BLIND,
+                     Event, Reading, State)
 
 
 def _event(kind: str, when: datetime, sample_time: datetime | None, detail: dict) -> Event:
@@ -32,11 +34,39 @@ def detect(state: State, reading: Reading, now: datetime,
 
     if not reading.ok:
         # Una lectura fallida nunca toca el estado de la red: "no sé" no es
-        # "no hay luz".
+        # "no hay luz". Solo puede producir el aviso de "monitor ciego".
+        if s.last_ok_read_at is not None and not s.blind_alerted:
+            blind_s = (now - s.last_ok_read_at).total_seconds()
+            if blind_s >= cfg.blind_after_s:
+                s.blind_alerted = True
+                events.append(_event(MONITOR_BLIND, now, None, {
+                    "blind_minutes": int(blind_s // 60),
+                    "error": reading.error,
+                }))
         return s, events
 
     s.last_ok_read_at = now
+    s.blind_alerted = False
     fresh = _is_new_sample(s, reading)
+
+    # Silencio del inversor: la muestra deja de avanzar. El tiempo se mide
+    # SIEMPRE con `last_sample_seen_at` (nuestro reloj), nunca con
+    # `last_sample_time` (reloj naive local del inversor).
+    if s.last_sample_seen_at is not None:
+        age = 0.0 if fresh else (now - s.last_sample_seen_at).total_seconds()
+        if not fresh and age >= cfg.stale_after_s and not s.silent:
+            s.silent = True
+            events.append(_event(INVERTER_SILENT, now, reading.sample_time, {
+                "silent_minutes": int(age // 60),
+                "grid_v": reading.grid_v,
+                "bat_soc": reading.bat_soc,
+            }))
+        elif fresh and s.silent:
+            silent_s = (now - s.last_sample_seen_at).total_seconds()
+            s.silent = False
+            events.append(_event(INVERTER_REPORTING, now, reading.sample_time, {
+                "silent_minutes": int(silent_s // 60),
+            }))
 
     if reading.grid_v >= cfg.grid_ok_above:
         s.seen_grid_ok = True
@@ -100,6 +130,19 @@ def detect(state: State, reading: Reading, now: datetime,
             s.pending_kind = None
             s.pending_since = None
             s.pending_samples = 0
+
+    # Batería crítica: solo durante un corte, una vez por apagón.
+    if (s.grid == "down" and reading.bat_soc is not None
+            and reading.bat_soc <= cfg.soc_critical and not s.battery_alerted):
+        s.battery_alerted = True
+        elapsed = 0
+        if s.outage_started_at is not None:
+            elapsed = int((now - s.outage_started_at).total_seconds() // 60)
+        events.append(_event(BATTERY_CRITICAL, now, reading.sample_time, {
+            "bat_soc": reading.bat_soc,
+            "load_power": reading.load_power,
+            "outage_minutes": elapsed,
+        }))
 
     if fresh:
         if reading.sample_time is not None:
