@@ -3,6 +3,9 @@
 *.env
 !.env.example
 config.local.toml
+# Tu config local, copiada de config.example.toml. Sin secretos, pero
+# versionarla haría que cada `git pull` de actualización choque con ella.
+config.toml
 
 # Runtime state
 state.json
