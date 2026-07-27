@@ -1,0 +1,20 @@
+services:
+  grid-watch:
+    build: .
+    image: grid-watch:local
+    container_name: grid-watch
+    restart: unless-stopped
+    # Secretos por entorno; el archivo debe estar en modo 0600 y fuera de git.
+    env_file: .env
+    volumes:
+      - ./config.toml:/etc/grid-watch/config.toml:ro
+      - grid-watch-state:/var/lib/grid-watch
+    # Sin `ports`: el servicio solo hace peticiones salientes (Growatt y ntfy).
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  grid-watch-state:

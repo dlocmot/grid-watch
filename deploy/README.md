@@ -1,8 +1,55 @@
 # Deploying grid-watch
 
-Tested on Debian. Any host that stays online works — a small VPS is the best
-choice, because it keeps watching even if the outage also takes down the
-internet at the site being monitored.
+Any host that stays online works — a small VPS is the best choice, because it
+keeps watching even if the outage also takes down the internet at the site being
+monitored. Two options below: **Docker** (simplest) or **systemd**.
+
+Either way, validate before you trust it (step 3 in both).
+
+---
+
+# Option A — Docker
+
+```bash
+git clone https://github.com/dlocmot/grid-watch /opt/grid-watch
+cd /opt/grid-watch
+cp config.example.toml config.toml
+cp .env.example .env
+chmod 600 .env
+editor .env          # Growatt login + a long random ntfy topic
+```
+
+Point the state file at the volume, in `config.toml`:
+
+```toml
+state_path = "/var/lib/grid-watch/state.json"
+```
+
+Validate the signal and the notification path **before** starting the service —
+`--rm` so these one-shot runs leave nothing behind:
+
+```bash
+docker compose run --rm grid-watch --config /etc/grid-watch/config.toml --diagnose
+docker compose run --rm grid-watch --config /etc/grid-watch/config.toml --test-notify
+```
+
+`grid_v` must read above your `ok_above` threshold while the grid is up, and
+your phone must buzz. Then:
+
+```bash
+docker compose up -d
+docker compose logs -f
+```
+
+The state volume (`grid-watch-state`) holds the outage state and any alerts that
+could not be delivered yet, so recreating the container never loses an alert nor
+re-sends one. Logs are capped at 3 × 5 MB.
+
+To upgrade: `git pull && docker compose up -d --build`.
+
+---
+
+# Option B — systemd
 
 ## 1. Install
 
