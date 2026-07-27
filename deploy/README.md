@@ -25,6 +25,17 @@ Point the state file at the volume, in `config.toml`:
 state_path = "/var/lib/grid-watch/state.json"
 ```
 
+The container runs as a non-root user, so `config.toml` must be world-readable.
+On a hardened host (`umask 027`) the `cp` above creates it mode 640 and the
+container fails with `Permission denied` — it holds no secrets, so just:
+
+```bash
+chmod 644 config.toml
+```
+
+`.env` stays `600`: the Docker CLI reads it on the host as root, never the
+container.
+
 Validate the signal and the notification path **before** starting the service —
 `--rm` so these one-shot runs leave nothing behind:
 
