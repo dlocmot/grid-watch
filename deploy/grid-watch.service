@@ -1,0 +1,26 @@
+[Unit]
+Description=grid-watch — alerta de corte de red pública
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=grid-watch
+Group=grid-watch
+WorkingDirectory=/opt/grid-watch
+EnvironmentFile=/etc/grid-watch.env
+ExecStart=/opt/grid-watch/.venv/bin/grid-watch --config /etc/grid-watch/config.toml
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Endurecimiento: el servicio solo necesita leer su config y escribir su estado.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=grid-watch
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+[project]
+name = "grid-watch"
+version = "0.1.0"
+description = "Phone alert when the public grid goes down, detected through an off-grid Growatt inverter"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["growattServer>=1.5.0", "requests>=2.31.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+grid-watch = "grid_watch.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["grid_watch*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

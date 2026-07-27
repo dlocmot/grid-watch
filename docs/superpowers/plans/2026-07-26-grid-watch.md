@@ -322,10 +322,18 @@ git commit -m "feat: sonda cruda de la API de Growatt y notas de campos reales"
 **Interfaces:**
 - Consumes: nada.
 - Produces:
-  - `Reading(sample_time: datetime | None, grid_v: float, grid_hz: float, grid_power: float, bat_soc: float | None, load_power: float, pv_power: float, ok: bool = True, error: str | None = None)`, congelada.
+  - `Reading(sample_time: datetime | None, grid_v: float, grid_hz: float, grid_power: float, bat_soc: float | None, load_power: float, pv_power: float, status_text: str = "", ok: bool = True, error: str | None = None)`, congelada.
   - `Reading.failed(error: str) -> Reading` constructor de lectura fallida.
   - `Event(kind: str, event_id: str, created_at: datetime, detail: dict)`, congelada, con `to_dict()` y `Event.from_dict(d)`.
-  - `State` mutable con: `grid: str`, `pending_kind: str | None`, `pending_since: datetime | None`, `pending_samples: int`, `outage_started_at: datetime | None`, `battery_alerted: bool`, `silent: bool`, `blind_alerted: bool`, `last_sample_time: datetime | None`, `last_ok_read_at: datetime | None`, `seen_grid_ok: bool`, `queue: list[Event]`; con `to_dict()` y `State.from_dict(d)`.
+  - `State` mutable con: `grid: str`, `pending_kind: str | None`, `pending_since: datetime | None`, `pending_samples: int`, `outage_started_at: datetime | None`, `battery_alerted: bool`, `silent: bool`, `blind_alerted: bool`, `last_sample_time: datetime | None`, `last_sample_seen_at: datetime | None`, `last_ok_read_at: datetime | None`, `seen_grid_ok: bool`, `queue: list[Event]`; con `to_dict()` y `State.from_dict(d)`.
+
+> **Dos relojes distintos, no mezclar.** `last_sample_time` es la hora que
+> declara el inversor: naive y en su zona local (verificado en la Tarea 2,
+> campo `time`). Solo sirve para comparar muestras entre sí. Todo lo demás
+> —`pending_since`, `last_sample_seen_at`, `last_ok_read_at`— es nuestro reloj
+> en UTC aware, y es con esos con los que se mide cualquier duración. Restar
+> uno de otro lanzaría `TypeError`, y forzarlo daría un desfase igual al huso
+> del inversor.
   - Constantes de tipo de evento: `GRID_DOWN`, `GRID_RESTORED`, `BATTERY_CRITICAL`, `INVERTER_SILENT`, `INVERTER_REPORTING`, `MONITOR_BLIND`.
 
 - [ ] **Step 1: Escribir los tests que fallan**
@@ -413,6 +421,9 @@ class Reading:
     bat_soc: float | None = None
     load_power: float = 0.0
     pv_power: float = 0.0
+    # El inversor declara su modo ("Grid Bypass" con red presente). Se expone
+    # desde ya; se evaluará como señal principal cuando veamos un corte real.
+    status_text: str = ""
     ok: bool = True
     error: str | None = None
 
@@ -456,7 +467,8 @@ class State:
     battery_alerted: bool = False
     silent: bool = False
     blind_alerted: bool = False
-    last_sample_time: datetime | None = None
+    last_sample_time: datetime | None = None      # reloj del inversor (naive local)
+    last_sample_seen_at: datetime | None = None   # nuestro reloj: cuándo la vimos
     last_ok_read_at: datetime | None = None
     seen_grid_ok: bool = False
     queue: list[Event] = field(default_factory=list)
@@ -472,6 +484,7 @@ class State:
             "silent": self.silent,
             "blind_alerted": self.blind_alerted,
             "last_sample_time": _iso(self.last_sample_time),
+            "last_sample_seen_at": _iso(self.last_sample_seen_at),
             "last_ok_read_at": _iso(self.last_ok_read_at),
             "seen_grid_ok": self.seen_grid_ok,
             "queue": [e.to_dict() for e in self.queue],
@@ -489,6 +502,7 @@ class State:
             silent=d.get("silent", False),
             blind_alerted=d.get("blind_alerted", False),
             last_sample_time=_parse(d.get("last_sample_time")),
+            last_sample_seen_at=_parse(d.get("last_sample_seen_at")),
             last_ok_read_at=_parse(d.get("last_ok_read_at")),
             seen_grid_ok=d.get("seen_grid_ok", False),
             queue=[Event.from_dict(e) for e in d.get("queue", [])],
@@ -893,7 +907,9 @@ def detect(state: State, reading: Reading, now: datetime, cfg: Config) -> tuple[
 
     if s.grid == "unknown":
         s.grid = observed
-        s.last_sample_time = reading.sample_time or s.last_sample_time
+        if fresh:
+            s.last_sample_time = reading.sample_time or s.last_sample_time
+            s.last_sample_seen_at = now
         return s, events
 
     if observed == s.grid:
@@ -903,7 +919,9 @@ def detect(state: State, reading: Reading, now: datetime, cfg: Config) -> tuple[
     else:
         if s.pending_kind != observed:
             s.pending_kind = observed
-            s.pending_since = reading.sample_time or now
+            # Nuestro reloj, no el del inversor: su `time` es naive local y
+            # restarlo de `now` (UTC aware) lanzaría TypeError.
+            s.pending_since = now
             s.pending_samples = 1
         elif fresh:
             s.pending_samples += 1
@@ -942,8 +960,10 @@ def detect(state: State, reading: Reading, now: datetime, cfg: Config) -> tuple[
             s.pending_since = None
             s.pending_samples = 0
 
-    if fresh and reading.sample_time is not None:
-        s.last_sample_time = reading.sample_time
+    if fresh:
+        if reading.sample_time is not None:
+            s.last_sample_time = reading.sample_time
+        s.last_sample_seen_at = now
     return s, events
 ```
 
@@ -1092,9 +1112,11 @@ Sustituir el bloque inicial de `detect()` que atiende la lectura fallida por est
     s.blind_alerted = False
     fresh = _is_new_sample(s, reading)
 
-    # Silencio del inversor: la muestra deja de avanzar.
-    if s.last_sample_time is not None and reading.sample_time is not None:
-        age = (now - s.last_sample_time).total_seconds() if not fresh else 0.0
+    # Silencio del inversor: la muestra deja de avanzar. El tiempo se mide
+    # SIEMPRE con `last_sample_seen_at` (nuestro reloj), nunca con
+    # `last_sample_time` (reloj naive local del inversor).
+    if s.last_sample_seen_at is not None:
+        age = 0.0 if fresh else (now - s.last_sample_seen_at).total_seconds()
         if not fresh and age >= cfg.stale_after_s and not s.silent:
             s.silent = True
             events.append(_event(INVERTER_SILENT, now, reading.sample_time, {
@@ -1103,7 +1125,7 @@ Sustituir el bloque inicial de `detect()` que atiende la lectura fallida por est
                 "bat_soc": reading.bat_soc,
             }))
         elif fresh and s.silent:
-            silent_s = (now - s.last_sample_time).total_seconds()
+            silent_s = (now - s.last_sample_seen_at).total_seconds()
             s.silent = False
             events.append(_event(INVERTER_REPORTING, now, reading.sample_time, {
                 "silent_minutes": int(silent_s // 60),
@@ -1534,7 +1556,10 @@ from .models import Reading
 _UNITS = ("MWh", "kWh", "Wh", "kW", "W", "%", "V", "Hz", "VA")
 # Campos candidatos a marca de tiempo del dispositivo, en orden de preferencia.
 # Confirmar el real con la sonda de la Tarea 2 y dejar solo ese si se conoce.
-_TIME_FIELDS = ("lastUpdateTime", "time", "calendar")
+# Confirmado en la Tarea 2: el campo es `time`, con formato
+# "%Y-%m-%d %H:%M:%S" y en hora LOCAL NAIVE del inversor (no UTC). Se usa solo
+# para comparar muestras entre sí; nunca se resta de nuestro reloj.
+_TIME_FIELDS = ("time",)
 
 
 class Source(Protocol):
@@ -1649,9 +1674,29 @@ class GrowattCloudSource:
 Run: `.venv/bin/pytest tests/test_source.py -v`
 Expected: PASS (5 tests)
 
-- [ ] **Step 5: Ajustar `_TIME_FIELDS` con el hallazgo real**
+- [ ] **Step 5: Añadir el test del status del inversor**
 
-Si la Tarea 2 identificó el campo exacto, dejar solo ese en `_TIME_FIELDS`. Si no existe ninguno, dejar la tupla vacía y anotarlo en `docs/api-notes.md`: `sample_time` será siempre `None` y la confirmación recaerá en `min_sustain_s`, tal como prevé §7.2 del diseño.
+La Tarea 2 descubrió que el inversor declara su propio modo. Aún no sabemos qué valor toma durante un corte, así que de momento solo se expone, sin usarlo para decidir:
+
+```python
+# añadir a tests/test_source.py
+def test_status_text_is_exposed_for_future_use():
+    r = parse_storage_bean({"vGrid": "218.3", "statusText": "Bypass",
+                            "SPF5000StatusText": "Grid Bypass"})
+    assert r.status_text == "Grid Bypass"
+
+
+def test_status_text_falls_back_to_generic_field():
+    r = parse_storage_bean({"vGrid": "218.3", "statusText": "Bypass"})
+    assert r.status_text == "Bypass"
+```
+
+El campo `status_text` ya está declarado en `Reading` (Tarea 3); aquí solo hay que rellenarlo en `parse_storage_bean` con `bean.get("SPF5000StatusText") or bean.get("statusText") or ""`.
+
+Run: `.venv/bin/pytest tests/test_source.py -v`
+Expected: PASS (7 tests)
+
+Cuando ocurra el primer corte real, anotar en `docs/api-notes.md` qué valor toma el status y evaluar promoverlo a señal principal con `vGrid` de respaldo.
 
 - [ ] **Step 6: Commit**
 
@@ -1917,7 +1962,7 @@ if __name__ == "__main__":
 
 Run: `.venv/bin/pytest -v`
 Expected: PASS (todos: smoke 1 + probe 2 + models 4 + config 5 + detector_grid 9
-+ detector_alerts 7 + state 4 + notifier 7 + source 5 + loop 4 = **48 tests**)
++ detector_alerts 7 + state 4 + notifier 7 + source 7 + loop 4 = **50 tests**)
 
 - [ ] **Step 5: Commit**
 
